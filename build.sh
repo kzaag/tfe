@@ -1,6 +1,9 @@
 gcc \
     main.c tfe.c \
-    -ltensorflow \
+    -ltensorflow  \
     -o tfe \
-    -Wextra -Wpedantic -std=c99 \
+    -Wall -Wextra -Wpedantic -pedantic \
+    -std=c99 \
+    -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition \
     `pkg-config --libs opencv`;
+    

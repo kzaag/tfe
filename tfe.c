@@ -1,23 +1,21 @@
 #include <stdio.h>
-#include <string.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <unistd.h>
-#include <string.h>
-#define __USE_XOPEN2K
-#include <stdlib.h>
 
-#include "tensorflow/c/c_api.h"
-#include "opencv/cv.h"
 #include "opencv/highgui.h"
 #include "tfe.h"
 
-#define MAX_DETECTIONS 100
-
-// assuming out of memory for failed tf allocations
+/* assuming out of memory for failed tf allocations */
 #define TFE_EALLOC ENOMEM
 
-#define TFE_set_default_tf_status(s) TF_SetStatus(s, TF_UNKNOWN, "")
+#define BBOX_LABEL_LEN 20
+
+#define TFE_set_ok_status(status) TF_SetStatus(status, TF_OK, "")
+
+#define TFE_set_default_tf_status(s, hdr) TF_SetStatus(s, TF_UNKNOWN, hdr)
+
+#define TFE_set_status_from_errno(status) \
+    TFE_set_default_tf_status(status, strerror(errno))
 
 #define TFE_set_default_errno() if(errno == 0) errno = TFE_EALLOC
 
@@ -25,27 +23,21 @@
 
 #define TFE_FAIL 2
 
-/* not thread safe */
-#define TFE_printf_errno(hd) printf("%s: %s\n", hd, strerror(errno))
-
-#define TFE_printf_status(hd, status)                       \
-    {   if(TF_GetCode(status) == TF_UNKNOWN) {                \
-            TFE_printf_errno(hd);                           \
-        } else {                                            \
-            printf("%s: %s\n", hd, TF_Message(status));      \
-        }                                                   \
-    }      
-
 TF_Tensor * 
-TFE_TensorFromCVImage(const IplImage * const img)
+TFE_TensorFromCVImage(const IplImage * const img, TF_Status * status)
 {
-    if(img == NULL) {
-        errno = EINVAL;
-        return NULL;
-    }
-
     TF_Tensor * tensor;
     int64_t shape[4];
+
+    tensor = NULL;
+    errno = 0;
+    TFE_set_ok_status(status);
+
+    if(img == NULL) {
+        errno = EINVAL;
+        TFE_set_status_from_errno(status);
+        return NULL;
+    }
 
     shape[0] = 1;             
     shape[1] = img->height; 
@@ -54,6 +46,7 @@ TFE_TensorFromCVImage(const IplImage * const img)
 
     if((tensor = TF_AllocateTensor(TF_UINT8, shape, 4, img->imageSize)) == NULL) {
         TFE_set_default_errno();
+        TFE_set_status_from_errno(status);
         return NULL;
     }
 
@@ -67,36 +60,46 @@ TFE_ImportGraph(const char * const path, TF_Status * status)
 {
     int gfd;
     off_t gsize;
-    char * gbuf = NULL;
-    TF_Buffer * gtfbuf = NULL;
-    TF_Graph * g = NULL;
-    TF_ImportGraphDefOptions * grph_opts = NULL;
+    char * gbuf;
+    TF_Buffer * gtfbuf;
+    TF_Graph * g;
+    TF_ImportGraphDefOptions * grph_opts;
 
     errno = 0;
-    TFE_set_default_tf_status(status);
+    gbuf = NULL;
+    gtfbuf = NULL;
+    g = NULL;
+    grph_opts = NULL;
+    TFE_set_ok_status(status);
 
     if((g = TF_NewGraph()) == NULL) {
         TFE_set_default_errno();
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     if((gfd = open(path, O_RDONLY)) <= 0) {
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     if((gsize = lseek(gfd, 0, SEEK_END)) < 0) {
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     if(lseek(gfd, 0, SEEK_SET) < 0) {
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     if((gbuf = malloc(gsize)) == NULL) {
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     if(read(gfd, gbuf, gsize) < 0) {
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
@@ -105,16 +108,18 @@ TFE_ImportGraph(const char * const path, TF_Status * status)
 
     if((gtfbuf = TF_NewBuffer()) == NULL) {
         TFE_set_default_errno();
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
     gtfbuf->data = gbuf;
     gtfbuf->length = gsize;
-    // we are gonna handle deallocation of data.
+    /* we are gonna handle deallocation of data. */
     gtfbuf->data_deallocator = NULL;
 
     if((grph_opts = TF_NewImportGraphDefOptions()) == NULL) {
         TFE_set_default_errno();
+        TFE_set_status_from_errno(status);
         goto end;
     }
 
@@ -128,7 +133,7 @@ end:
     if(gbuf != NULL) free(gbuf);
     if(gfd > 0) close(gfd);
 
-    if(errno != 0) {
+    if(TF_GetCode(status) != TF_OK) {
         if(g != NULL) TF_DeleteGraph(g);
         g = NULL;
     }
@@ -140,14 +145,15 @@ end:
     get outputs for tensorflow object detection API
 */
 int
-TFE_OD_GetOutputs(TF_Output * in, size_t inl, TF_Output * out, size_t outl, TF_Graph * graph)
+TFE_OD_GetOutputs(
+    TF_Output * in, size_t inl, TF_Output * out, size_t outl, TF_Graph * graph)
 {
+    TF_Operation * tmp;
+
     if(outl != 4 || inl != 1) {
         errno = EINVAL;
         return -1;
     }
-
-    TF_Operation * tmp;
 
     if((tmp = TF_GraphOperationByName(graph, "image_tensor")) == NULL) {
         errno = ENOENT;
@@ -193,7 +199,7 @@ TFE_OD_GetOutputs(TF_Output * in, size_t inl, TF_Output * out, size_t outl, TF_G
 }
 
 int
-TFE_OD_GetTensors(TF_Tensor ** in, size_t inl, TF_Tensor ** out, size_t outl, IplImage * img, int maxDim)
+TFE_OD_GetTensors(TF_Tensor ** in, size_t inl, TF_Tensor ** out, size_t outl, IplImage * img, int maxdet)
 {
     if(inl != 1 || outl != 4) {
         errno = EINVAL;
@@ -212,24 +218,24 @@ TFE_OD_GetTensors(TF_Tensor ** in, size_t inl, TF_Tensor ** out, size_t outl, Ip
 
     if((out[0] = TF_AllocateTensor(
             TF_FLOAT,
-            (int64_t[]){1, MAX_DETECTIONS, 4},
-            3, sizeof(float)*MAX_DETECTIONS*4)) == NULL){
+            (int64_t[]){1, maxdet, 4},
+            3, sizeof(float)*maxdet*4)) == NULL){
         TFE_set_default_errno();
         return -1;
     }
 
     if((out[1] = TF_AllocateTensor(
             TF_FLOAT,
-            (int64_t[]){1, MAX_DETECTIONS},
-            2, sizeof(float)*MAX_DETECTIONS)) == NULL){
+            (int64_t[]){1, maxdet},
+            2, sizeof(float)*maxdet)) == NULL){
         TFE_set_default_errno();
         return -1;
     }
 
     if((out[2] = TF_AllocateTensor(
             TF_FLOAT,
-            (int64_t[]){1, MAX_DETECTIONS},
-            2, sizeof(float)*MAX_DETECTIONS)) == NULL){
+            (int64_t[]){1, maxdet},
+            2, sizeof(float)*maxdet)) == NULL){
         TFE_set_default_errno();
         return -1;
     }
@@ -246,15 +252,14 @@ TFE_OD_GetTensors(TF_Tensor ** in, size_t inl, TF_Tensor ** out, size_t outl, Ip
 }
 
 void
-TFE_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float * classes, size_t num)
+TFE_OD_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float * classes, size_t num)
 {
     const float (* bbox_2d)[4] = (const float (*)[4])bbox;
     size_t i = 0;
     CvFont font;
     CvPoint lp, rp;
     CvScalar color;
-    const int textl = 20;
-    char text[textl];
+    char text[BBOX_LABEL_LEN];
 
     cvInitFont(&font, CV_FONT_HERSHEY_PLAIN, 1.2, 1.2, 0, 2, 0);
     
@@ -272,7 +277,7 @@ TFE_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float * c
         cvRectangle(img, lp, rp, color, 2, 0, 0);
         
         lp.y-=4;
-        snprintf(text, textl, "%.2f%% | %d", scores[i]*100, (int)classes[i]);
+        snprintf(text, BBOX_LABEL_LEN, "%.2f%% | %d", scores[i]*100, (int)classes[i]);
 
         cvPutText(img, text, lp, &font, color);
     }
@@ -282,64 +287,63 @@ TFE_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float * c
     cvWaitKey(-1);
 }
 
-int
-TFE_OD_Run()
+
+TF_Session *
+TFE_OD_CreateSession(TF_Graph * graph, TF_Status * status)
 {
-    TF_Status * status = NULL;
-    TF_Graph * graph = NULL;
-    TF_Session * sess = NULL;
+    TF_Session * session = NULL;
     TF_SessionOptions * sess_opt = NULL;
+    
+    if((sess_opt = TF_NewSessionOptions()) == NULL) {
+        TFE_set_default_tf_status(status, "Creating session options");
+        TFE_set_default_errno();
+        return NULL;
+    }
+
+    if((session = TF_NewSession(graph, sess_opt, status)) == NULL || TF_GetCode(status) != TF_OK) {
+        errno = EINVAL;
+    }
+
+    TF_DeleteSessionOptions(sess_opt);
+
+    if(TFE_ptr_err(session, status)) return NULL;
+
+    return session;
+}
+
+/*
+    a lot of variables here such as outputs, tensors could be reused here instead of redefined.
+    todo: refractor
+*/
+void
+TFE_OD_RunInferenceWithDisplay(
+    TF_Session * sess, TF_Graph * graph, TF_Status * status, const char * imgpath, int maxDetections)
+{
     IplImage * img = NULL;
     TF_Output out_outputs[4], in_outputs[1];
     TF_Tensor * out_values[4], * in_values[1];
     size_t i = 0;
 
+    TFE_set_ok_status(status);
+    errno = 0;
+
     for(i = 0; i < 4; i++) out_values[i] = NULL;
     for(i = 0; i < 1; i++) in_values[i] = NULL;
 
-    setenv("TF_CPP_MIN_LOG_LEVEL", "3", 1);
-
-    if((status = TF_NewStatus()) == NULL) {
-        TFE_set_default_errno();
-        TFE_printf_errno("Create status");
-        goto end;
-    }
-
-    if((graph = TFE_ImportGraph("frozen_inference_graph.pb", status)) == NULL || 
-            TF_GetCode(status) != TF_OK) {
-        TFE_printf_status("Import graph", status);
-        goto end;
-    }
-
-    if((sess_opt = TF_NewSessionOptions()) == NULL) {
-        TFE_set_default_errno();
-        TFE_printf_errno("Create session options");
-        goto end;
-    }
-
-    if((sess = TF_NewSession(graph, sess_opt, status)) == NULL || 
-            TF_GetCode(status) != TF_OK) {
-        TFE_set_default_errno();
-        TFE_printf_status("Import graph", status);
-        goto end;
-    }
-
-    TF_DeleteSessionOptions(sess_opt);
-    sess_opt = NULL;
-
-    if((img = cvLoadImage("1.jpg", CV_LOAD_IMAGE_COLOR)) == NULL) {
-        TFE_set_default_errno();
-        TFE_printf_errno("Load image");
+    if((img = cvLoadImage(imgpath, CV_LOAD_IMAGE_COLOR)) == NULL) {
+        TFE_set_errno(EINVAL);
+        TFE_set_default_tf_status(status, "Couldnt load image");
         goto end;
     }
 
     if(TFE_OD_GetOutputs(in_outputs, 1, out_outputs, 4, graph) != 0) {
-        TFE_printf_errno("Get outputs");
+        TFE_set_default_errno();
+        TFE_set_default_tf_status(status, "Couldnt get outputs");
         goto end;
     }
 
-    if(TFE_OD_GetTensors(in_values, 1, out_values, 4, img, 100) != 0) {
-        TFE_printf_errno("Get tensors");
+    if(TFE_OD_GetTensors(in_values, 1, out_values, 4, img, maxDetections) != 0) {
+        TFE_set_default_tf_status(status, "Couldnt get status");
         goto end;
     }
 
@@ -348,45 +352,27 @@ TFE_OD_Run()
                 out_outputs, out_values, 4, 
                 NULL, 0, NULL, status);
 
-    if(TF_GetCode(status) != TF_OK) {
-        TFE_printf_status("Session run", status);
+    if(TFE_err(status)) {
         TFE_set_errno(EINVAL);
         goto end;
     }
 
-    TFE_DisplayBboxesOnImage(
+    TFE_OD_DisplayBboxesOnImage(
         img,
         TF_TensorData(out_values[0]),
         TF_TensorData(out_values[1]),
         TF_TensorData(out_values[2]),
         (size_t)((float*)TF_TensorData(out_values[3]))[0]);
 
-    TF_SessionRun(sess, NULL, 
-                in_outputs,  in_values, 1, 
-                out_outputs, out_values, 4, 
-                NULL, 0, NULL, status);
-
-    if(TF_GetCode(status) != TF_OK) {
-        TFE_printf_status("Session run", status);
+    if(TFE_err(status)) {
         TFE_set_errno(EINVAL);
         goto end;
     }
 
 end:
-    if(graph != NULL) TF_DeleteGraph(graph);
-    if(sess_opt != NULL) TF_DeleteSessionOptions(sess_opt);
-    if(sess != NULL) TF_DeleteSession(sess, status);
-    // might wanna handle status here
-    if(status != NULL) TF_DeleteStatus(status);
     if(img != NULL) cvReleaseImage(&img);
     for(i = 0; i < 4; i++)
         if(out_values[i] != NULL) TF_DeleteTensor(out_values[i]);
     for(i = 0; i < 1; i++)
         if(in_values[i] != NULL) TF_DeleteTensor(in_values[i]);
-
-    if(errno == 0) {
-        return 0;
-    } else {
-        return -1;
-    }
 }
