@@ -1,2 +1,3 @@
 [ ] training
 [ ] create some custom models
+[ ] better portability - bsd / other linux (tested on debian)
