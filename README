@@ -1,0 +1,5 @@
+1. install.sh to prepare environment (install tensorflow and opencv)
+
+2. build.sh to build (gcc is needed)
+
+3. ./tfe -i img.jpg -g frozen_inference_graph/pb to perform inference

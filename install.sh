@@ -1,3 +1,5 @@
+# installation of tensorflow 1.15 and opencv 2.4 on the target system.  
+
 set -e
 
 wget https://storage.googleapis.com/tensorflow/libtensorflow/libtensorflow-cpu-linux-x86_64-1.15.0.tar.gz;
@@ -7,6 +9,7 @@ sudo tar -C /usr/local -xzf libtensorflow-cpu-linux-x86_64-1.15.0.tar.gz;
 sudo ldconfig;
 
 rm libtensorflow-cpu-linux-x86_64-1.15.0.tar.gz;
+
 
 
 #opencv
