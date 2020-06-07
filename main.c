@@ -16,11 +16,11 @@ set_args(int argc, char ** argv, char ** graph_path, char ** img_path)
         tmpl = strlen(optarg);
         if(tmpl <= 0) break;
         switch(c){
-        case 'i':
+        case 'g':
             if((*graph_path = malloc(tmpl+1)) == NULL) break;
             strcpy(*graph_path, optarg);
             break;
-        case 'g':
+        case 'i':
             if((*img_path = malloc(tmpl+1)) == NULL) break;
             strcpy(*img_path, optarg);
             break;
@@ -44,10 +44,6 @@ main(int argc, char ** argv)
         goto end;
     }
 
-    printf("%s\n%s\n", graph_path, img_path);
-
-    exit(0);
-
     if((status = TF_NewStatus()) == NULL) {
         printf("Could allocate status");
         goto end;
@@ -67,10 +63,12 @@ main(int argc, char ** argv)
         goto end;
     }
 
-    TFE_OD_RunInferenceWithDisplay(session, graph, status, img_path, 100);
+    //TFE_OD_RunInferenceWithDisplay(session, graph, status, img_path, 100);
+
+    TFE_OD_RunInferenceWithCamera(session, graph, status, 100);
 
     if(TFE_err(status)) {
-        TFE_printf_status("Inference1", status);
+        TFE_printf_status("Inference", status);
         goto end;
     }
 

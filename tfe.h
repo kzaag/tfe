@@ -56,13 +56,20 @@ TFE_OD_DisplayBboxesOnImage(IplImage * img,
                             float * bbox, 
                             float * scores, 
                             float * classes, 
-                            size_t num);
+                            size_t num,
+                            int wait);
 
 void
 TFE_OD_RunInferenceWithDisplay( TF_Session * sess, 
                                 TF_Graph * graph, 
                                 TF_Status * status, 
                                 const char * imgpath, 
+                                int maxDetections);
+
+void
+TFE_OD_RunInferenceWithCamera(  TF_Session * sess, 
+                                TF_Graph * graph, 
+                                TF_Status * status, 
                                 int maxDetections);
 
 #endif

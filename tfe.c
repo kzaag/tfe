@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include "opencv/highgui.h"
+#include "opencv/cv.h"
 #include "tfe.h"
 
 /* assuming out of memory for failed tf allocations */
@@ -252,7 +253,8 @@ TFE_OD_GetTensors(TF_Tensor ** in, size_t inl, TF_Tensor ** out, size_t outl, Ip
 }
 
 void
-TFE_OD_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float * classes, size_t num)
+TFE_OD_DisplayBboxesOnImage(
+    IplImage * img, float * bbox, float * scores, float * classes, size_t num, int wait)
 {
     const float (* bbox_2d)[4] = (const float (*)[4])bbox;
     size_t i = 0;
@@ -282,9 +284,13 @@ TFE_OD_DisplayBboxesOnImage(IplImage * img, float * bbox, float * scores, float 
         cvPutText(img, text, lp, &font, color);
     }
 
-    cvShowImage("Inference result.", img);
+    cvShowImage("Inference", img);
 
-    cvWaitKey(-1);
+    if(wait) {
+        cvWaitKey(-1);
+    } else {
+        cvWaitKey(1);
+    }
 }
 
 
@@ -362,7 +368,8 @@ TFE_OD_RunInferenceWithDisplay(
         TF_TensorData(out_values[0]),
         TF_TensorData(out_values[1]),
         TF_TensorData(out_values[2]),
-        (size_t)((float*)TF_TensorData(out_values[3]))[0]);
+        (size_t)((float*)TF_TensorData(out_values[3]))[0], 
+        1);
 
     if(TFE_err(status)) {
         TFE_set_errno(EINVAL);
@@ -371,6 +378,114 @@ TFE_OD_RunInferenceWithDisplay(
 
 end:
     if(img != NULL) cvReleaseImage(&img);
+    for(i = 0; i < 4; i++)
+        if(out_values[i] != NULL) TF_DeleteTensor(out_values[i]);
+    for(i = 0; i < 1; i++)
+        if(in_values[i] != NULL) TF_DeleteTensor(in_values[i]);
+}
+
+void
+TFE_OD_RunInferenceWithCamera(
+    TF_Session * sess, TF_Graph * graph, TF_Status * status, int maxDetections)
+{
+    IplImage * img, * clone;
+    TF_Output out_outputs[4], in_outputs[1];
+    TF_Tensor * out_values[4], * in_values[1];
+    size_t i;
+    int isInit, psize;
+    CvCapture * cap;
+
+    TFE_set_ok_status(status);
+    errno = 0;
+    i = 0;
+    isInit = 0;
+    img = NULL;
+    clone = NULL;
+    for(i = 0; i < 4; i++) out_values[i] = NULL;
+    for(i = 0; i < 1; i++) in_values[i] = NULL;
+
+    if((cap = cvCreateCameraCapture(0)) == NULL) {
+        TFE_set_errno(EINVAL);
+        TFE_set_default_tf_status(status, "Couldnt open camera capture");
+        goto end;
+    }
+    
+    cvNamedWindow("Inference", 1);
+
+    for(;;) {
+        // if(cvGrabFrame(cap) != 1) {
+        //     printf("Couldnt grab a frame");
+        //     sleep(1);
+        //     continue;
+        // }
+
+        // img = cvRetrieveFrame(cap, 0);
+        // if(img == NULL) {
+        //     printf("Couldnt retrieve frame");
+        //     sleep(1);
+        //     continue;
+        // }
+
+        if((img = cvQueryFrame(cap)) == NULL) {
+            printf("Couldnt query frame");
+            sleep(1);
+            continue;
+        }
+
+        if(isInit && (psize != img->imageSize)) {
+            isInit = 0;
+        }
+
+        if(!isInit) {
+            for(i = 0; i < 4; i++)
+                if(out_values[i] != NULL) TF_DeleteTensor(out_values[i]);
+            for(i = 0; i < 1; i++)
+                if(in_values[i] != NULL) TF_DeleteTensor(in_values[i]);
+            if(TFE_OD_GetOutputs(in_outputs, 1, out_outputs, 4, graph) != 0) {
+                TFE_set_default_errno();
+                TFE_set_default_tf_status(status, "Couldnt get outputs");
+                goto end;
+            }
+            if(TFE_OD_GetTensors(in_values, 1, out_values, 4, img, maxDetections) != 0) {
+                TFE_set_default_tf_status(status, "Couldnt get status");
+                goto end;
+            }
+            isInit = 1;
+            psize = img->imageSize;
+            if(clone != NULL) {
+                cvReleaseImage(&clone);
+            }
+            clone = cvCreateImage(cvSize(img->width, img->height), img->depth ,3);
+        } else {
+            memcpy(TF_TensorData(in_values[0]), img->imageData, img->imageSize);
+        }
+
+        TF_SessionRun(sess, NULL, 
+                in_outputs,  in_values, 1, 
+                out_outputs, out_values, 4, 
+                NULL, 0, NULL, status);
+
+        if(TFE_err(status)) {
+            goto end;
+        }
+
+        cvCopyImage(img, clone);
+
+        TFE_OD_DisplayBboxesOnImage(
+            clone,
+            TF_TensorData(out_values[0]),
+            TF_TensorData(out_values[1]),
+            TF_TensorData(out_values[2]),
+            (size_t)((float*)TF_TensorData(out_values[3]))[0], 
+            0);
+    } 
+
+    if(TFE_err(status)) {
+        TFE_set_errno(EINVAL);
+        goto end;
+    }
+
+end:
     for(i = 0; i < 4; i++)
         if(out_values[i] != NULL) TF_DeleteTensor(out_values[i]);
     for(i = 0; i < 1; i++)
